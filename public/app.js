@@ -13,6 +13,8 @@ let myData = { activeEffects: {} };
 let gamePlayers = {};
 let gameTeams = {};
 let teamPolylines = [];
+let lastLocationEmitTime = 0;
+const LOCATION_EMIT_INTERVAL_MS = 1200;
 
 // Web Audio API генератор звуков
 const AudioFX = {
@@ -46,20 +48,60 @@ const AudioFX = {
 };
 
 const SHOP_ITEMS = {
-    'mul2': { name: 'Множитель x2', cost: 15, level: 'side', desc: 'Удваивает добычу' },
-    'mul3': { name: 'Множитель x3', cost: 35, level: 'side', desc: 'Утраивает добычу' },
-    'mul4': { name: 'Множитель x4', cost: 60, level: 'main', desc: 'Добыча x4' },
-    'mul5': { name: 'Множитель x5', cost: 100, level: 'main', desc: 'Макс. добыча' },
-    'scan': { name: 'Сканер пузырей', cost: 10, level: 'side', desc: 'Подсвечивает вражеские пузыри' },
-    'dash': { name: 'Экстренный рывок', cost: 12, level: 'side', desc: 'Щит на 20 сек' },
-    'smoke': { name: 'Маскировочный дым', cost: 15, level: 'side', desc: 'Невидимость на 35 сек' },
-    'magnet': { name: 'Магнит добычи', cost: 30, level: 'main', desc: 'Радиус сбора 25м' },
-    'jammer': { name: 'Глушилка радаров', cost: 40, level: 'main', desc: 'Скрывает карту врагам' },
-    'trap': { name: 'Ловушка-пузырь', cost: 25, level: 'main', desc: 'Мина-обманка' },
+    'mul2': { name: 'Множитель x2', cost: 8, level: 'side', desc: 'Удваивает добычу' },
+    'mul3': { name: 'Множитель x3', cost: 18, level: 'side', desc: 'Утраивает добычу' },
+    'mul4': { name: 'Множитель x4', cost: 30, level: 'main', desc: 'Добыча x4' },
+    'mul5': { name: 'Множитель x5', cost: 50, level: 'main', desc: 'Макс. добыча' },
+    'scan': { name: 'Сканер пузырей', cost: 5, level: 'side', desc: 'Подсвечивает вражеские пузыри' },
+    'dash': { name: 'Экстренный рывок', cost: 6, level: 'side', desc: 'Щит на 20 сек' },
+    'smoke': { name: 'Маскировочный дым', cost: 8, level: 'side', desc: 'Невидимость на 35 сек' },
+    'magnet': { name: 'Магнит добычи', cost: 15, level: 'main', desc: 'Радиус сбора 25м' },
+    'jammer': { name: 'Глушилка радаров', cost: 20, level: 'main', desc: 'Скрывает карту врагам' },
+    'trap': { name: 'Ловушка-пузырь', cost: 13, level: 'main', desc: 'Мина-обманка' },
     'trio': { name: 'Право на Трио', cost: 30, level: 'main', desc: 'Команда до 3 чел' }
 };
 
 const palette = ['#ff4081', '#2196f3', '#4caf50', '#ffeb3b', '#9c27b0'];
+
+// ==================== ДИАГНОСТИКА ГЕОЛОКАЦИИ ====================
+// Главная причина, по которой другие игроки "не появляются на карте" в реальных условиях —
+// браузер блокирует Geolocation API вне защищённого контекста (HTTPS или localhost).
+// Показываем явное предупреждение, чтобы это не выглядело как загадочный баг.
+
+function showGeoWarning(message) {
+    const banner = document.getElementById('geo-warning-banner');
+    banner.innerText = message;
+    banner.classList.add('show');
+}
+
+function hideGeoWarning() {
+    document.getElementById('geo-warning-banner').classList.remove('show');
+}
+
+function handleGeoError(err) {
+    console.error('Ошибка геолокации:', err);
+    if (err.code === 1) {
+        showGeoWarning('📍 Доступ к геопозиции запрещён. Разрешите доступ к местоположению в настройках браузера — иначе вы не будете видны другим игрокам.');
+    } else if (err.code === 2) {
+        showGeoWarning('📍 Не удаётся определить местоположение (нет сигнала GPS). Выйдите на открытое пространство.');
+    } else if (err.code === 3) {
+        showGeoWarning('📍 Превышено время ожидания GPS-сигнала. Проверьте, включена ли геолокация на устройстве.');
+    }
+}
+
+function checkGeoSupport() {
+    if (!window.isSecureContext) {
+        showGeoWarning('⚠️ Сайт открыт не по HTTPS — браузер блокирует геолокацию. Откройте адрес через https:// (или ngrok/localtunnel), иначе игроки не будут видеть друг друга на карте.');
+        return false;
+    }
+    if (!('geolocation' in navigator)) {
+        showGeoWarning('⚠️ Этот браузер не поддерживает геолокацию.');
+        return false;
+    }
+    return true;
+}
+checkGeoSupport();
+
 let selectedColor = palette[0];
 const colorPicker = document.getElementById('color-picker');
 palette.forEach(color => {
@@ -104,6 +146,16 @@ socket.on('updateLobby', (playersList) => {
         gamePlayers[p.id] = p;
         listDiv.innerHTML += `<div class="player-item"><div class="player-color-dot" style="background-color: ${p.color}"></div><span>${p.name} ${p.isAdmin ? '👑' : ''}</span></div>`;
     });
+
+    // Самовосстановление: если матч уже идёт и для какого-то игрока уже известны координаты,
+    // а маркера на карте почему-то нет (например, из-за пропущенного события при реконнекте) — создаём его.
+    if (map && document.getElementById('map').style.display === 'block') {
+        for (const id in gamePlayers) {
+            const pl = gamePlayers[id];
+            if (id !== socket.id && pl.lat != null && pl.lng != null) createOtherPlayerMarker(pl);
+        }
+        updateVisibility();
+    }
 });
 
 socket.on('lobbyState', (data) => {
@@ -510,10 +562,30 @@ function initMap() {
 
     L.circle(gameCenter, { color: '#ff2e93', weight: 2, fillColor: '#ff2e93', fillOpacity: 0.06, radius: ZONE_RADIUS_M }).addTo(map);
 
-    if ('geolocation' in navigator) {
-        navigator.geolocation.watchPosition(updatePosition, (err) => console.error(err), { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 });
-        setInterval(() => { navigator.geolocation.getCurrentPosition(updatePosition, () => { }, { enableHighAccuracy: true, maximumAge: 1000 }); }, 2000);
-    }
+    if (!checkGeoSupport()) return;
+
+    // watchPosition — единственный источник обновлений позиции. Раньше рядом с ним ещё был
+    // setInterval с getCurrentPosition каждые 2с — это удваивало сетевой трафик на каждого игрока
+    // (при 10 игроках сервер рассылал вдвое больше 'playerMoved', чем нужно) и не давало выигрыша,
+    // так как watchPosition и так сообщает о каждом изменении координат.
+    let lastFixTime = Date.now();
+    navigator.geolocation.watchPosition(
+        (pos) => { lastFixTime = Date.now(); hideGeoWarning(); updatePosition(pos); },
+        handleGeoError,
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+    );
+
+    // Подстраховка: если по какой-то причине watchPosition "завис" (бывает на некоторых Android-браузерах
+    // при уходе в фон), раз в 10с делаем разовый опрос как запасной вариант.
+    setInterval(() => {
+        if (Date.now() - lastFixTime > 10000) {
+            navigator.geolocation.getCurrentPosition(
+                (pos) => { lastFixTime = Date.now(); hideGeoWarning(); updatePosition(pos); },
+                handleGeoError,
+                { enableHighAccuracy: true, maximumAge: 1000 }
+            );
+        }
+    }, 10000);
 }
 
 function updateVisibility() {
@@ -587,7 +659,14 @@ function updatePosition(position) {
     if (!myMarker) { myMarker = L.marker(myLatLng, { icon: createBubbleIcon(myData) }).addTo(map); map.setView(myLatLng, 17); }
     else { myMarker.setLatLng(myLatLng); if (!map.getBounds().contains(myLatLng)) map.panTo(myLatLng); }
 
-    socket.emit('updateLocation', { lat: myData.lat, lng: myData.lng });
+    // Троттлинг: шлём координаты на сервер не чаще раза в ~1.2с. Без этого при нескольких игроках
+    // сервер рассылает каждому все чужие 'playerMoved' пропорционально частоте GPS-колбэков —
+    // трафик и нагрузка растут квадратично от числа игроков.
+    const nowTs = Date.now();
+    if (nowTs - lastLocationEmitTime >= LOCATION_EMIT_INTERVAL_MS) {
+        lastLocationEmitTime = nowTs;
+        socket.emit('updateLocation', { lat: myData.lat, lng: myData.lng });
+    }
 
     let closestCP = null; let minDist = Infinity;
     for (let cp of gameCheckpoints) {
