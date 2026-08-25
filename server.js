@@ -5,8 +5,8 @@ const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
     maxHttpBufferSize: 1e7,
     transports: ['websocket'],
-    pingInterval: 10000,
-    pingTimeout: 5000
+    pingInterval: 20000,
+    pingTimeout: 20000
 });
 
 app.use(express.static('public'));
@@ -49,16 +49,16 @@ let settings = {
 };
 
 const SHOP_DB = {
-    'mul2': { cost: 15, type: 'passive', level: 'side', val: 2 },
-    'mul3': { cost: 35, type: 'passive', level: 'side', val: 3 },
-    'mul4': { cost: 60, type: 'passive', level: 'main', val: 4 },
-    'mul5': { cost: 100, type: 'passive', level: 'main', val: 5 },
-    'scan': { cost: 10, type: 'consumable', level: 'side' },
-    'dash': { cost: 12, type: 'consumable', level: 'side' },
-    'smoke': { cost: 15, type: 'consumable', level: 'side' },
-    'magnet': { cost: 30, type: 'consumable', level: 'main' },
-    'jammer': { cost: 40, type: 'consumable', level: 'main' },
-    'trap': { cost: 25, type: 'consumable', level: 'main' },
+    'mul2': { cost: 8, type: 'passive', level: 'side', val: 2 },
+    'mul3': { cost: 18, type: 'passive', level: 'side', val: 3 },
+    'mul4': { cost: 30, type: 'passive', level: 'main', val: 4 },
+    'mul5': { cost: 50, type: 'passive', level: 'main', val: 5 },
+    'scan': { cost: 5, type: 'consumable', level: 'side' },
+    'dash': { cost: 6, type: 'consumable', level: 'side' },
+    'smoke': { cost: 8, type: 'consumable', level: 'side' },
+    'magnet': { cost: 15, type: 'consumable', level: 'main' },
+    'jammer': { cost: 20, type: 'consumable', level: 'main' },
+    'trap': { cost: 13, type: 'consumable', level: 'main' },
     'trio': { cost: 30, type: 'passive', level: 'main' }
 };
 
@@ -306,6 +306,9 @@ function rebindPlayer(socket, player) {
         }
         if (adminId === oldId) adminId = socket.id;
         io.emit('playerDisconnected', oldId);
+        // Сообщаем всем клиентам о переподключившемся игроке под новым id и его последней позиции,
+        // иначе его маркер на карте у остальных пропадёт до следующего обновления геолокации
+        io.emit('playerStateChanged', player);
     }
     player.connected = true;
     socket.data.playerId = socket.id;
