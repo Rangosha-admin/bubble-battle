@@ -1,0 +1,714 @@
+const socket = io({ transports: ['websocket'], upgrade: false });
+const reconnectTokenKey = 'bubblBattleReconnectToken';
+let reconnectToken = localStorage.getItem(reconnectTokenKey);
+const gameCenter = [41.3138361, 69.2903755];
+let map, myMarker;
+const otherPlayers = {};
+const gameBubbles = {};
+let gameCheckpoints = [];
+let myCurrentCheckpoint = null;
+let matchEndTime = 0;
+
+let myData = { activeEffects: {} };
+let gamePlayers = {};
+let gameTeams = {};
+let teamPolylines = [];
+
+// Web Audio API генератор звуков
+const AudioFX = {
+    ctx: null,
+    init() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); },
+    playTone(freq, type, duration, delay = 0, gainVal = 0.2) {
+        try {
+            this.init();
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = type; osc.frequency.value = freq;
+            osc.connect(gain); gain.connect(this.ctx.destination);
+            const startTime = this.ctx.currentTime + delay;
+            gain.gain.setValueAtTime(gainVal, startTime);
+            osc.start(startTime); gain.gain.exponentialRampToValueAtTime(0.00001, startTime + duration);
+            osc.stop(startTime + duration);
+        } catch (e) { }
+    },
+    click() { this.playTone(600, 'sine', 0.05); },
+    collect() { this.playTone(880, 'triangle', 0.12); },
+    buy() { this.playTone(523.25, 'square', 0.15); },
+    attack() { this.playTone(150, 'sawtooth', 0.3); },
+    stop() { this.playTone(110, 'square', 0.6); },
+    reveal() { this.playTone(660, 'triangle', 0.18); },
+    tick() { this.playTone(440, 'square', 0.08); },
+    victory() {
+        this.init();
+        const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+        notes.forEach((f, i) => this.playTone(f, 'triangle', 0.5, i * 0.15, 0.22));
+    }
+};
+
+const SHOP_ITEMS = {
+    'mul2': { name: 'Множитель x2', cost: 15, level: 'side', desc: 'Удваивает добычу' },
+    'mul3': { name: 'Множитель x3', cost: 35, level: 'side', desc: 'Утраивает добычу' },
+    'mul4': { name: 'Множитель x4', cost: 60, level: 'main', desc: 'Добыча x4' },
+    'mul5': { name: 'Множитель x5', cost: 100, level: 'main', desc: 'Макс. добыча' },
+    'scan': { name: 'Сканер пузырей', cost: 10, level: 'side', desc: 'Подсвечивает вражеские пузыри' },
+    'dash': { name: 'Экстренный рывок', cost: 12, level: 'side', desc: 'Щит на 20 сек' },
+    'smoke': { name: 'Маскировочный дым', cost: 15, level: 'side', desc: 'Невидимость на 35 сек' },
+    'magnet': { name: 'Магнит добычи', cost: 30, level: 'main', desc: 'Радиус сбора 25м' },
+    'jammer': { name: 'Глушилка радаров', cost: 40, level: 'main', desc: 'Скрывает карту врагам' },
+    'trap': { name: 'Ловушка-пузырь', cost: 25, level: 'main', desc: 'Мина-обманка' },
+    'trio': { name: 'Право на Трио', cost: 30, level: 'main', desc: 'Команда до 3 чел' }
+};
+
+const palette = ['#ff4081', '#2196f3', '#4caf50', '#ffeb3b', '#9c27b0'];
+let selectedColor = palette[0];
+const colorPicker = document.getElementById('color-picker');
+palette.forEach(color => {
+    const btn = document.createElement('div'); btn.className = 'color-btn'; btn.style.backgroundColor = color;
+    if (color === selectedColor) btn.classList.add('active');
+    btn.onclick = () => {
+        AudioFX.click();
+        document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active'); selectedColor = color;
+    };
+    colorPicker.appendChild(btn);
+});
+
+function joinLobby() {
+    AudioFX.click();
+    const name = document.getElementById('username').value;
+    const photoInput = document.getElementById('userphoto').files[0];
+    if (!name) return alert("Введите имя!");
+    myData = { name, color: selectedColor, photo: "", activeEffects: {}, reconnectToken };
+    if (photoInput) {
+        const reader = new FileReader(); reader.onload = (e) => { myData.photo = e.target.result; socket.emit('joinLobby', myData); }; reader.readAsDataURL(photoInput);
+    } else socket.emit('joinLobby', myData);
+    document.getElementById('login-screen').style.display = 'none'; document.getElementById('lobby-screen').style.display = 'flex';
+}
+
+socket.on('connect', () => {
+    if (reconnectToken) socket.emit('resumePlayer', reconnectToken);
+});
+
+socket.on('playerSession', (data) => {
+    reconnectToken = data.reconnectToken;
+    localStorage.setItem(reconnectTokenKey, reconnectToken);
+});
+
+socket.on('updateLobby', (playersList) => {
+    const listDiv = document.getElementById('players-list'); listDiv.innerHTML = '';
+    const currentIds = new Set(playersList.map(p => p.id));
+    for (const id of Object.keys(gamePlayers)) {
+        if (!currentIds.has(id)) delete gamePlayers[id];
+    }
+    playersList.forEach(p => {
+        gamePlayers[p.id] = p;
+        listDiv.innerHTML += `<div class="player-item"><div class="player-color-dot" style="background-color: ${p.color}"></div><span>${p.name} ${p.isAdmin ? '👑' : ''}</span></div>`;
+    });
+});
+
+socket.on('lobbyState', (data) => {
+    if (data.gameState === 'lobby') {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('lobby-screen').style.display = 'flex';
+    }
+    if (data.isAdmin) {
+        document.getElementById('admin-settings').style.display = 'block';
+        document.getElementById('wait-text').style.display = 'none';
+        document.getElementById('admin-controls').style.display = 'block';
+    } else {
+        document.getElementById('admin-settings').style.display = 'none';
+        document.getElementById('wait-text').style.display = 'block';
+        document.getElementById('admin-controls').style.display = 'none';
+    }
+});
+
+// ==================== НАСТРОЙКИ УСЛОВИЙ ЗАВЕРШЕНИЯ (АДМИН) ====================
+
+const timeToggle = document.getElementById('cond-time-toggle');
+const timeValue = document.getElementById('cond-time-value');
+const timeDisplay = document.getElementById('cond-time-display');
+const poToggle = document.getElementById('cond-po-toggle');
+const poValue = document.getElementById('cond-po-value');
+const poDisplay = document.getElementById('cond-po-display');
+
+function formatMinutes(mins) {
+    mins = parseInt(mins);
+    if (mins < 60) return `${mins} мин.`;
+    const h = Math.floor(mins / 60); const m = mins % 60;
+    return m === 0 ? `${h} ч.` : `${h} ч. ${m} мин.`;
+}
+
+timeValue.addEventListener('input', () => { timeDisplay.innerText = formatMinutes(timeValue.value); });
+poValue.addEventListener('input', () => { poDisplay.innerText = `${poValue.value} ПО`; });
+timeDisplay.innerText = formatMinutes(timeValue.value);
+poDisplay.innerText = `${poValue.value} ПО`;
+
+function adminStartGame() {
+    AudioFX.click();
+    const timeEnabled = timeToggle.checked;
+    const poEnabled = poToggle.checked;
+    const royaleEnabled = document.getElementById('cond-royale-toggle').checked;
+
+    if (!timeEnabled && !poEnabled && !royaleEnabled) {
+        return alert("Выберите хотя бы одно условие завершения матча!");
+    }
+
+    socket.emit('startGame', {
+        timeLimit: { enabled: timeEnabled, minutes: parseInt(timeValue.value) },
+        poLimit: { enabled: poEnabled, po: parseInt(poValue.value) },
+        royale: { enabled: royaleEnabled }
+    });
+}
+
+function confirmStopGame() {
+    AudioFX.click();
+    if (confirm("Вы уверены, что хотите принудительно завершить игру?")) {
+        if (confirm("Это действие сбросит прогресс всех игроков. Завершить?")) {
+            socket.emit('adminStopGame');
+            closeModals();
+        }
+    }
+}
+
+socket.on('gameStarted', (data) => {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('lobby-screen').style.display = 'none';
+    document.getElementById('map').style.display = 'block';
+    document.getElementById('ui-container').style.display = 'block';
+    document.getElementById('btn-inventory').style.display = 'block';
+    document.getElementById('stop-notice').style.display = 'none';
+
+    matchEndTime = data.matchEndTime;
+    document.getElementById('timer-row').style.display = matchEndTime > 0 ? 'block' : 'none';
+
+    gamePlayers = data.players; myData = gamePlayers[socket.id]; gameTeams = data.teams || {};
+    initMap();
+
+    for (const id of Object.keys(otherPlayers)) {
+        if (!gamePlayers[id] || id === socket.id) {
+            map.removeLayer(otherPlayers[id]);
+            delete otherPlayers[id];
+        }
+    }
+    for (const id in gamePlayers) {
+        const player = gamePlayers[id];
+        if (id !== socket.id && player.lat != null && player.lng != null) createOtherPlayerMarker(player);
+    }
+
+    for (let id in data.bubbles) { gameBubbles[id] = data.bubbles[id]; }
+    updateVisibility();
+
+    gameCheckpoints = data.checkpoints;
+    for (let cp of gameCheckpoints) spawnCheckpoint(cp);
+
+    setInterval(updateUI, 1000);
+});
+
+socket.on('gameReset', (data) => {
+    AudioFX.stop();
+    document.getElementById('map').style.display = 'none';
+    document.getElementById('ui-container').style.display = 'none';
+    document.getElementById('btn-inventory').style.display = 'none';
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('lobby-screen').style.display = 'none';
+    document.getElementById('finale-call-overlay').classList.remove('show');
+    document.getElementById('finale-leaderboard-overlay').classList.remove('show');
+    hideZoneWarning();
+    document.getElementById('zone-death-toast').classList.remove('show');
+
+    document.getElementById('username').value = '';
+    const notice = document.getElementById('stop-notice');
+    notice.innerText = data.reason || "Матч завершен.";
+    notice.style.display = 'block';
+
+    if (map) { map.remove(); map = null; }
+    myMarker = null;
+    for (let id in otherPlayers) { delete otherPlayers[id]; }
+    for (let id in gameBubbles) { delete gameBubbles[id]; }
+    teamPolylines = [];
+    closeModals();
+});
+
+// ==================== ФИНАЛ: ЭТАП 1 — ПРИЗЫВ НА БАЗУ ====================
+
+socket.on('finaleStageOne', (data) => {
+    AudioFX.stop();
+    document.getElementById('finale-call-title').innerText = data.title;
+    document.getElementById('finale-call-message').innerText = data.message;
+    document.getElementById('finale-countdown-block').style.display = 'none';
+    document.getElementById('finale-waiting-status').style.display = 'block';
+    document.getElementById('finale-call-overlay').classList.add('show');
+});
+
+socket.on('finaleCountdownStart', (data) => {
+    document.getElementById('finale-waiting-status').style.display = 'none';
+    const cdBlock = document.getElementById('finale-countdown-block');
+    cdBlock.style.display = 'block';
+    let n = data.seconds;
+    const numEl = document.getElementById('countdown-number');
+    numEl.innerText = n;
+    AudioFX.tick();
+
+    const iv = setInterval(() => {
+        n--;
+        if (n <= 0) {
+            clearInterval(iv);
+            numEl.innerText = '0';
+        } else {
+            numEl.innerText = n;
+            AudioFX.tick();
+        }
+    }, 1000);
+});
+
+// ==================== ФИНАЛ: ЭТАП 2 — ЛИДЕРБОРД ====================
+
+socket.on('finaleLeaderboard', (data) => {
+    document.getElementById('finale-call-overlay').classList.remove('show');
+    showLeaderboardAnimation(data.entries);
+});
+
+function lbAvatarHtml(photo, colorBorder) {
+    return `<div class="lb-avatar" style="border-color:${colorBorder}">${photo ? `<img src="${photo}">` : '<div class="lb-avatar-placeholder"></div>'}</div>`;
+}
+
+function showLeaderboardAnimation(entries) {
+    const overlay = document.getElementById('finale-leaderboard-overlay');
+    const list = document.getElementById('leaderboard-list');
+    const menuBtn = document.getElementById('finale-menu-btn');
+    list.innerHTML = '';
+    menuBtn.style.display = 'none';
+    overlay.classList.add('show');
+
+    if (!entries || entries.length === 0) {
+        menuBtn.style.display = 'inline-block';
+        return;
+    }
+
+    const reversed = [...entries].reverse(); // от последнего места к первому
+    const total = reversed.length;
+    let idx = 0;
+
+    function revealNext() {
+        if (idx >= total) {
+            setTimeout(() => { menuBtn.style.display = 'inline-block'; }, 700);
+            return;
+        }
+
+        const entry = reversed[idx];
+        const place = total - idx;
+        const isWinner = place === 1;
+
+        const row = document.createElement('div');
+        row.className = 'leaderboard-row lb-pop-in' + (isWinner ? ' winner-row' : '');
+
+        let namesHtml, avatarsHtml;
+        if (entry.type === 'team') {
+            namesHtml = entry.members.map(m => m.name).join(' &amp; ');
+            avatarsHtml = `<div class="lb-avatars-group">${entry.members.map(m => lbAvatarHtml(m.photo, entry.color)).join('')}</div>`;
+        } else {
+            namesHtml = entry.name;
+            avatarsHtml = `<div class="lb-avatars-group">${lbAvatarHtml(entry.photo, entry.color)}</div>`;
+        }
+
+        row.innerHTML = `
+            <div class="lb-place" style="${isWinner ? 'color:gold;' : ''}">#${place}</div>
+            ${avatarsHtml}
+            <div class="lb-name">${namesHtml}</div>
+            <div class="lb-po">${entry.po} ПО</div>
+        `;
+        list.prepend(row);
+
+        AudioFX.reveal();
+
+        if (isWinner) {
+            setTimeout(() => {
+                row.classList.add('winner-final');
+                document.getElementById('leaderboard-title').innerText = '🏆 ПОБЕДИТЕЛЬ! 🏆';
+                AudioFX.victory();
+            }, 500);
+        }
+
+        idx++;
+        setTimeout(revealNext, isWinner ? 2600 : 1700);
+    }
+
+    document.getElementById('leaderboard-title').innerText = 'Итоги матча';
+    revealNext();
+}
+
+function returnToMenu() {
+    AudioFX.click();
+    socket.emit('finaleAcknowledge');
+}
+
+// ==================== ВЫХОД ЗА ПРЕДЕЛЫ ИГРОВОЙ ЗОНЫ ====================
+
+let zoneWarningInterval = null;
+let zoneWarningRemaining = 0;
+
+function showZoneWarning(seconds) {
+    const overlay = document.getElementById('zone-warning-overlay');
+    const numEl = document.getElementById('zone-countdown-number');
+    overlay.classList.add('show');
+
+    zoneWarningRemaining = seconds;
+    numEl.innerText = zoneWarningRemaining;
+
+    if (zoneWarningInterval) clearInterval(zoneWarningInterval);
+    AudioFX.tick();
+    zoneWarningInterval = setInterval(() => {
+        zoneWarningRemaining--;
+        if (zoneWarningRemaining <= 0) {
+            numEl.innerText = '0';
+            clearInterval(zoneWarningInterval);
+            zoneWarningInterval = null;
+        } else {
+            numEl.innerText = zoneWarningRemaining;
+            if (zoneWarningRemaining <= 10) AudioFX.tick();
+        }
+    }, 1000);
+}
+
+function hideZoneWarning() {
+    document.getElementById('zone-warning-overlay').classList.remove('show');
+    if (zoneWarningInterval) { clearInterval(zoneWarningInterval); zoneWarningInterval = null; }
+}
+
+function showZoneDeathToast() {
+    const toast = document.getElementById('zone-death-toast');
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 4500);
+}
+
+socket.on('zoneWarningStart', (data) => { showZoneWarning(data.seconds); });
+socket.on('zoneWarningClear', () => { hideZoneWarning(); });
+socket.on('zoneDeath', () => {
+    hideZoneWarning();
+    AudioFX.stop();
+    showZoneDeathToast();
+});
+
+function activateKillMode() { AudioFX.attack(); socket.emit('activateKillMode'); }
+
+function openShop() {
+    if (!myData.inCheckpoint) return;
+    AudioFX.click();
+    const isMain = myCurrentCheckpoint && myCurrentCheckpoint.startsWith('cp_main');
+    document.getElementById('shop-convert-box').style.display = isMain ? 'block' : 'none';
+
+    const list = document.getElementById('shop-items-list'); list.innerHTML = '';
+    for (const [id, item] of Object.entries(SHOP_ITEMS)) {
+        if (item.level === 'main' && !isMain) continue;
+        if (id === 'trio' && myData.canTrio) continue;
+        list.innerHTML += `<div class="shop-item"><div><b>${item.name}</b><br><small style="color:gray;">${item.desc}</small></div><button onclick="buyItem('${id}')" style="background: #4caf50;">${item.cost} 🟡</button></div>`;
+    }
+    showModal('shop-modal');
+}
+
+function openTeamManage() {
+    if (!myData.inCheckpoint) return;
+    AudioFX.click();
+    document.getElementById('team-invite-actions').style.display = myData.pendingInvite ? 'block' : 'none';
+    document.getElementById('team-leave-actions').style.display = myData.teamId ? 'block' : 'none';
+    if (myData.teamId && gameTeams[myData.teamId]) document.getElementById('team-po-display').innerText = gameTeams[myData.teamId].totalPO;
+
+    showModal('team-modal');
+}
+
+function buyItem(itemId) { AudioFX.buy(); socket.emit('buyItem', itemId); }
+function useItem(itemId) { AudioFX.click(); socket.emit('useItem', itemId); closeModals(); }
+function acceptInvite() { socket.emit('acceptInvite'); closeModals(); }
+function declineInvite() { socket.emit('declineInvite'); closeModals(); }
+function leaveTeam() { socket.emit('leaveTeam'); closeModals(); }
+
+function openInventory() {
+    AudioFX.click();
+    const list = document.getElementById('inventory-items-list'); list.innerHTML = ''; let hasItems = false;
+    if (myData.inventory) {
+        for (const [id, count] of Object.entries(myData.inventory)) {
+            if (count > 0) {
+                hasItems = true;
+                list.innerHTML += `<div class="inv-item"><div><b>${SHOP_ITEMS[id].name}</b> <span style="color:#ff4081;">x${count}</span></div><button onclick="useItem('${id}')" style="background: #2196f3;">Исп.</button></div>`;
+            }
+        }
+    }
+    if (!hasItems) list.innerHTML = '<i>Здесь пока пусто...</i>';
+    showModal('inventory-modal');
+}
+
+function showModal(id) {
+    document.getElementById('modal-overlay').classList.add('show');
+    document.getElementById(id).classList.add('show');
+}
+
+function closeModals() {
+    document.getElementById('modal-overlay').classList.remove('show');
+    ['shop-modal', 'inventory-modal', 'team-modal'].forEach(id => document.getElementById(id).classList.remove('show'));
+}
+
+function createBubbleIcon(player) {
+    const now = Date.now(); let cssClass = 'bubble-marker-icon '; let extraHtml = '';
+    if (player.inCheckpoint) cssClass += 'in-checkpoint';
+    else if (player.isDead) { cssClass += 'bubble-dead'; extraHtml = '<div class="dead-overlay">💀</div>'; }
+    else if (player.killModeEnd && now < player.killModeEnd) cssClass += 'bubble-attack';
+    else if (player.killCooldown && now < (player.killModeEnd + 90000)) cssClass += 'bubble-cooldown';
+
+    let pColor = player.color;
+    if (player.teamId && gameTeams[player.teamId]) pColor = gameTeams[player.teamId].leaderColor;
+
+    const html = `<div class="${cssClass}" style="width: 45px; height: 45px; background-color: ${pColor}; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden;">
+            ${player.photo ? `<img src="${player.photo}" style="width: 100%; height: 100%; object-fit: cover;">` : ''} ${extraHtml}
+        </div><div style="text-align: center; font-weight: bold; color: black; text-shadow: 1px 1px 2px white; margin-left: -20px; width: 85px;">${player.name}</div>`;
+    return L.divIcon({ className: '', html: html, iconSize: [45, 45], iconAnchor: [22, 22] });
+}
+
+function createCoinIcon(color) { return L.divIcon({ className: '', html: `<div style="width: 20px; height: 20px; background: radial-gradient(circle, ${color}, #fff); border-radius: 50%; border: 2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>`, iconSize: [20, 20], iconAnchor: [10, 10] }); }
+
+function spawnCheckpoint(cp) {
+    const isMain = cp.type === 'main';
+    const icon = L.divIcon({ className: '', html: `<div style="font-size: 30px; text-shadow: 0 0 5px black; text-align: center;">${isMain ? '🏆' : '🏳️'}</div>`, iconSize: [30, 30], iconAnchor: [15, 30] });
+    L.circle([cp.lat, cp.lng], { color: '#4caf50', fillColor: '#4caf50', fillOpacity: 0.3, radius: 8 }).addTo(map);
+    L.marker([cp.lat, cp.lng], { icon }).addTo(map).bindPopup(isMain ? 'Главная База' : 'База');
+}
+
+// Радиус игровой зоны + буфер, за пределами которого тайлы карты вообще не подгружаются.
+// Это экономит трафик и разгружает рендер на слабых мобильных устройствах.
+const ZONE_RADIUS_M = 375;
+const TILE_LOAD_PADDING_M = 300;
+
+function metersToLatLngBounds(centerLat, centerLng, radiusM) {
+    const latDelta = radiusM / 111320;
+    const lngDelta = radiusM / (111320 * Math.cos(centerLat * Math.PI / 180));
+    return L.latLngBounds(
+        [centerLat - latDelta, centerLng - lngDelta],
+        [centerLat + latDelta, centerLng + lngDelta]
+    );
+}
+
+function initMap() {
+    if (map) return;
+
+    const tileBounds = metersToLatLngBounds(gameCenter[0], gameCenter[1], ZONE_RADIUS_M + TILE_LOAD_PADDING_M);
+
+    map = L.map('map', {
+        preferCanvas: true,       // canvas-рендер вместо SVG — заметно легче на телефонах
+        zoomControl: true,
+        maxBounds: tileBounds,    // не даём укатить карту далеко за пределы зоны
+        maxBoundsViscosity: 1.0,
+        minZoom: 14,
+        maxZoom: 19
+    }).setView(gameCenter, 16);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        minZoom: 14,
+        bounds: tileBounds,       // Leaflet не запросит тайлы за пределами этой области
+        keepBuffer: 2,            // меньше тайлов держим в памяти про запас
+        updateWhenZooming: false
+    }).addTo(map);
+
+    L.circle(gameCenter, { color: '#ff2e93', weight: 2, fillColor: '#ff2e93', fillOpacity: 0.06, radius: ZONE_RADIUS_M }).addTo(map);
+
+    if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(updatePosition, (err) => console.error(err), { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 });
+        setInterval(() => { navigator.geolocation.getCurrentPosition(updatePosition, () => { }, { enableHighAccuracy: true, maximumAge: 1000 }); }, 2000);
+    }
+}
+
+function updateVisibility() {
+    const now = Date.now();
+    const canScan = myData.activeEffects && now < myData.activeEffects.scan;
+    const amIJammed = myData.activeEffects && now < myData.activeEffects.jammed;
+
+    for (let id in gameBubbles) {
+        const b = gameBubbles[id];
+        let isFriendly = b.ownerId === socket.id;
+        if (myData.teamId && gameTeams[myData.teamId] && gameTeams[myData.teamId].members.includes(b.ownerId)) isFriendly = true;
+
+        const isTrap = b.type === 'trap';
+        let visible = isFriendly || canScan || isTrap;
+
+        if (visible) {
+            if (!b.marker) {
+                let renderColor = (isTrap && !isFriendly) ? myData.color : b.color;
+                b.marker = L.marker([b.lat, b.lng], { icon: createCoinIcon(renderColor) }).addTo(map);
+            }
+        } else {
+            if (b.marker) { map.removeLayer(b.marker); b.marker = null; }
+        }
+    }
+
+    teamPolylines.forEach(pl => map.removeLayer(pl)); teamPolylines = [];
+    if (myData.teamId && gameTeams[myData.teamId]) {
+        const tColor = gameTeams[myData.teamId].leaderColor;
+        const members = gameTeams[myData.teamId].members.filter(m => m !== socket.id && gamePlayers[m] && gamePlayers[m].lat);
+        members.forEach(m => {
+            const pl = L.polyline([[myData.lat, myData.lng], [gamePlayers[m].lat, gamePlayers[m].lng]], { color: tColor, dashArray: '5, 5', weight: 3 }).addTo(map);
+            teamPolylines.push(pl);
+        });
+    }
+
+    for (let id in otherPlayers) {
+        const p = gamePlayers[id];
+        if (!p) continue;
+        const isSmoked = p.activeEffects && now < p.activeEffects.smoke;
+        let isFriendly = myData.teamId && p.teamId === myData.teamId;
+
+        let visible = (!amIJammed && !isSmoked) || isFriendly;
+
+        if (visible) {
+            otherPlayers[id].setLatLng([p.lat, p.lng]);
+            otherPlayers[id].setIcon(createBubbleIcon(p));
+            if (!map.hasLayer(otherPlayers[id])) map.addLayer(otherPlayers[id]);
+        } else {
+            if (map.hasLayer(otherPlayers[id])) map.removeLayer(otherPlayers[id]);
+        }
+    }
+}
+
+function createOtherPlayerMarker(player) {
+    if (player.id === socket.id || player.lat == null || player.lng == null || otherPlayers[player.id]) return;
+
+    const marker = L.marker([player.lat, player.lng], { icon: createBubbleIcon(player) });
+    marker.on('click', () => {
+        if (confirm(`Предложить союз игроку ${gamePlayers[player.id].name}?`)) {
+            socket.emit('invitePlayer', player.id);
+        }
+    });
+    otherPlayers[player.id] = marker;
+    marker.addTo(map);
+}
+
+function updatePosition(position) {
+    myData.lat = position.coords.latitude; myData.lng = position.coords.longitude;
+    const myLatLng = L.latLng(myData.lat, myData.lng);
+
+    if (!myMarker) { myMarker = L.marker(myLatLng, { icon: createBubbleIcon(myData) }).addTo(map); map.setView(myLatLng, 17); }
+    else { myMarker.setLatLng(myLatLng); if (!map.getBounds().contains(myLatLng)) map.panTo(myLatLng); }
+
+    socket.emit('updateLocation', { lat: myData.lat, lng: myData.lng });
+
+    let closestCP = null; let minDist = Infinity;
+    for (let cp of gameCheckpoints) {
+        const dist = myLatLng.distanceTo(L.latLng(cp.lat, cp.lng));
+        if (dist < minDist) { minDist = dist; closestCP = cp.id; }
+    }
+
+    if (minDist <= 8) {
+        if (myCurrentCheckpoint !== closestCP) { myCurrentCheckpoint = closestCP; socket.emit('enterCheckpoint', closestCP); }
+    } else {
+        if (myCurrentCheckpoint !== null) { myCurrentCheckpoint = null; socket.emit('leaveCheckpoint'); closeModals(); }
+    }
+
+    if (myData.isDead) return;
+
+    const pickupRadius = (myData.activeEffects && Date.now() < myData.activeEffects.magnet) ? 25 : 10;
+
+    for (let id in gameBubbles) {
+        if (myLatLng.distanceTo(L.latLng(gameBubbles[id].lat, gameBubbles[id].lng)) < pickupRadius) {
+            AudioFX.collect();
+            socket.emit('collectBubble', id);
+            if (gameBubbles[id].marker) map.removeLayer(gameBubbles[id].marker);
+            delete gameBubbles[id];
+        }
+    }
+
+    const now = Date.now();
+    if (myData.killModeEnd && now < myData.killModeEnd && !myData.inCheckpoint) {
+        for (let id in otherPlayers) {
+            const targetP = gamePlayers[id];
+            if (!targetP || targetP.isDead || targetP.inCheckpoint) continue;
+            if (myLatLng.distanceTo(L.latLng(targetP.lat, targetP.lng)) <= 5) socket.emit('tryKill', id);
+        }
+    }
+}
+
+function updateUI() {
+    const now = Date.now();
+    const btnKill = document.getElementById('btn-kill');
+    const btnShop = document.getElementById('btn-shop');
+    const btnTeam = document.getElementById('btn-team-manage');
+    const status = document.getElementById('status-text');
+    const timerDisplay = document.getElementById('match-timer');
+
+    if (matchEndTime > 0) {
+        const remainingMs = Math.max(0, matchEndTime - now);
+        const totalSec = Math.floor(remainingMs / 1000);
+        const hrs = Math.floor(totalSec / 3600);
+        const mins = Math.floor((totalSec % 3600) / 60);
+        const secs = totalSec % 60;
+
+        timerDisplay.innerText = `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+        if (totalSec <= 300 && totalSec > 0) timerDisplay.classList.add('timer-warning');
+        else timerDisplay.classList.remove('timer-warning');
+    }
+
+    let displayPO = myData.po || 0;
+    if (myData.teamId && gameTeams[myData.teamId]) displayPO = gameTeams[myData.teamId].totalPO;
+    document.getElementById('val-po').innerText = displayPO;
+
+    document.getElementById('val-coins').innerText = myData.coins || 0;
+    document.getElementById('val-mult').innerText = myData.multiplier || 1;
+
+    if (myData.pendingInvite) {
+        document.getElementById('invite-toast').innerText = `${myData.pendingInvite.fromName} предлагает союз! Зайдите в базу.`;
+        document.getElementById('invite-toast').style.display = 'block';
+    } else {
+        document.getElementById('invite-toast').style.display = 'none';
+    }
+
+    if (myData.inCheckpoint) {
+        status.innerText = "В БЕЗОПАСНОЙ ЗОНЕ"; status.style.color = "gold";
+        btnKill.style.display = "none"; btnShop.style.display = "inline-block";
+        if (myData.pendingInvite || myData.teamId) btnTeam.style.display = "inline-block"; else btnTeam.style.display = "none";
+    } else {
+        btnShop.style.display = "none"; btnTeam.style.display = "none";
+        if (myData.isDead) { status.innerText = "ВЫ МЕРТВЫ 💀"; status.style.color = "gray"; btnKill.style.display = "none"; }
+        else if (myData.shieldEnd && now < myData.shieldEnd) {
+            status.innerText = `Щит: ${Math.ceil((myData.shieldEnd - now) / 1000)} сек.`; status.style.color = "#4caf50"; btnKill.style.display = "none";
+        } else if (myData.killModeEnd && now < myData.killModeEnd) {
+            status.innerText = `Атака: ${Math.ceil((myData.killModeEnd - now) / 1000)} сек.`; status.style.color = "red"; btnKill.style.display = "none";
+        } else if (myData.killCooldown && now < myData.killCooldown) {
+            status.innerText = `Перезарядка: ${Math.ceil((myData.killCooldown - now) / 1000)} сек.`; status.style.color = "orange"; btnKill.style.display = "none";
+        } else {
+            status.innerText = "Готов к бою"; status.style.color = "black"; btnKill.style.display = "block";
+        }
+    }
+
+    if (myData.activeEffects) {
+        const effs = myData.activeEffects;
+        document.getElementById('buff-scan').style.display = effs.scan > now ? 'block' : 'none'; if (effs.scan > now) document.querySelector('#buff-scan .time').innerText = Math.ceil((effs.scan - now) / 1000) + 'с';
+        document.getElementById('buff-dash').style.display = effs.dash > now ? 'block' : 'none'; if (effs.dash > now) document.querySelector('#buff-dash .time').innerText = Math.ceil((effs.dash - now) / 1000) + 'с';
+        document.getElementById('buff-smoke').style.display = effs.smoke > now ? 'block' : 'none'; if (effs.smoke > now) document.querySelector('#buff-smoke .time').innerText = Math.ceil((effs.smoke - now) / 1000) + 'с';
+        document.getElementById('buff-magnet').style.display = effs.magnet > now ? 'block' : 'none'; if (effs.magnet > now) document.querySelector('#buff-magnet .time').innerText = Math.ceil((effs.magnet - now) / 1000) + 'с';
+        document.getElementById('buff-jammed').style.display = effs.jammed > now ? 'block' : 'none'; if (effs.jammed > now) document.querySelector('#buff-jammed .time').innerText = Math.ceil((effs.jammed - now) / 1000) + 'с';
+    }
+
+    if (myMarker) myMarker.setIcon(createBubbleIcon(myData));
+    updateVisibility();
+}
+
+socket.on('playerStateChanged', (updatedPlayer) => {
+    gamePlayers[updatedPlayer.id] = updatedPlayer;
+    if (updatedPlayer.id === socket.id) { myData = updatedPlayer; updateUI(); }
+    else if (map && updatedPlayer.lat != null) {
+        createOtherPlayerMarker(updatedPlayer);
+        updateVisibility();
+    }
+});
+
+socket.on('teamUpdated', (ts) => { gameTeams = ts; updateUI(); });
+socket.on('newBubble', (bubble) => { gameBubbles[bubble.id] = bubble; updateVisibility(); });
+socket.on('bubbleCollected', (id) => { if (gameBubbles[id] && gameBubbles[id].marker) { map.removeLayer(gameBubbles[id].marker); } delete gameBubbles[id]; });
+
+socket.on('playerMoved', (data) => {
+    if (gamePlayers[data.id]) {
+        gamePlayers[data.id].lat = data.coords.lat; gamePlayers[data.id].lng = data.coords.lng;
+        if (document.getElementById('map').style.display === 'block') createOtherPlayerMarker(gamePlayers[data.id]);
+        if (otherPlayers[data.id]) otherPlayers[data.id].setLatLng([data.coords.lat, data.coords.lng]);
+    }
+});
+
+socket.on('playerDisconnected', (id) => { if (otherPlayers[id]) { map.removeLayer(otherPlayers[id]); delete otherPlayers[id]; } });
