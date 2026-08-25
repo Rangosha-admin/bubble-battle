@@ -10,6 +10,15 @@ const io = require('socket.io')(http, {
 });
 
 app.use(express.static('public'));
+const path = require('path');
+
+// Раздавать статические файлы из текущей директории
+app.use(express.static(__dirname));
+
+// При запросе главной страницы отдавать index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 let players = {};
 let bubbles = {};
