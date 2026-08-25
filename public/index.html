@@ -9,13 +9,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================================
-           BUBBLE BATTLE — тактический GPS-арена дизайн
-           Палитра: глубокий полуночный "радар" фон + неоновые cyan/magenta акценты
-           Дисплей: Rubik (плотный, округлый, аркадный)
-           Текст: Inter
-           Сигнатурный элемент: радиальная "радар-сетка" на фоне и сканирующая линия
-           ============================================================ */
         :root {
             --bg-void: #070b14;
             --bg-deep: #0c1626;
@@ -50,7 +43,6 @@
 
         #map { width: 100vw; height: 100vh; display: none; background: var(--bg-void); }
 
-        /* Радар-сетка на фоне полноэкранных экранов — сигнатурный элемент */
         .screen {
             height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center;
             position: relative; overflow: hidden; color: var(--text-primary);
@@ -125,7 +117,6 @@
         }
         .player-color-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; flex-shrink: 0; box-shadow: 0 0 8px currentColor; }
 
-        /* ===== Блок условий завершения матча (Админ) ===== */
         .cond-block {
             background: rgba(255,255,255,0.04); border: 1px solid var(--panel-border);
             border-radius: var(--radius-m); padding: 14px; margin: 10px 0; text-align: left;
@@ -215,7 +206,6 @@
             box-shadow: 0 8px 24px rgba(0,0,0,0.4); width: 85%; max-width: 340px; text-align: center;
         }
 
-        /* ===== Полноэкранные оверлеи финала ===== */
         .finale-overlay {
             display: none; opacity: 0; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             z-index: 5000; align-items: center; justify-content: center; flex-direction: column;
@@ -297,7 +287,6 @@
             box-shadow: 0 8px 24px rgba(61,220,132,0.35);
         }
 
-        /* ===== Выход за пределы игровой зоны ===== */
         #zone-warning-overlay {
             display: none; opacity: 0; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             z-index: 4500; align-items: center; justify-content: center; flex-direction: column;
@@ -330,9 +319,20 @@
             align-items: center; justify-content: center; gap: 8px; font-size: 14px;
         }
         #zone-death-toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+        /* ===== Баннер критических предупреждений (геолокация/HTTPS) ===== */
+        #geo-warning-banner {
+            display: none; position: fixed; top: 0; left: 0; width: 100vw; z-index: 6000;
+            background: linear-gradient(90deg, var(--red), #b3121f); color: white;
+            padding: 12px 16px; font-size: 13px; font-weight: 600; text-align: center;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4); line-height: 1.4;
+        }
+        #geo-warning-banner.show { display: block; }
     </style>
 </head>
 <body>
+    <div id="geo-warning-banner"></div>
+
     <div id="login-screen" class="screen">
         <div class="box">
             <h2>Bubble Battle</h2>
@@ -437,7 +437,6 @@
         <button class="close-btn" onclick="closeModals()">Закрыть</button>
     </div>
 
-    <!-- Предупреждение о выходе за пределы игровой зоны -->
     <div id="zone-warning-overlay">
         <h1 id="zone-warning-title">Вы вне зоны!</h1>
         <p id="zone-warning-sub">Немедленно вернитесь в игровую зону, иначе погибнете и потеряете половину очков.</p>
@@ -447,7 +446,6 @@
 
     <div id="zone-death-toast">☠️ Вы погибли за пределами зоны и потеряли половину очков. Идите на Главный чекпоинт, чтобы возродиться.</div>
 
-    <!-- ЭТАП 1: Призыв на Главный чекпоинт -->
     <div id="finale-call-overlay" class="finale-overlay">
         <h1 id="finale-call-title">ВРЕМЯ ВЫШЛО!</h1>
         <p id="finale-call-message">Срочно вернитесь на Главный чекпоинт для подведения итогов!</p>
@@ -457,7 +455,6 @@
         </div>
     </div>
 
-    <!-- ЭТАП 2: Лидерборд -->
     <div id="finale-leaderboard-overlay" class="finale-overlay">
         <div id="leaderboard-content">
             <h1 id="leaderboard-title">Итоги матча</h1>
@@ -470,6 +467,6 @@
     
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=13"></script>
 </body>
 </html>
