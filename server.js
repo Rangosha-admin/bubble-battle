@@ -183,10 +183,20 @@ function checkZoneExpirations() {
     const now = Date.now();
     for (let id in players) {
         const p = players[id];
-        if (!p.zoneWarningActive || p.isDead) continue;
+        if (p.isDead) continue;
+
+        const staleMs = p.lastLocationAt ? now - p.lastLocationAt : Infinity;
+        if (staleMs > 30000 && p.lat != null && p.lng != null) {
+            const dist = getDistance(p.lat, p.lng, gameCenter.lat, gameCenter.lng);
+            if (dist > ZONE_RADIUS) {
+                killByZone(p);
+                continue;
+            }
+        }
+
+        if (!p.zoneWarningActive) continue;
         if (now < p.zoneWarningEnd) continue;
 
-        // Время вышло — проверяем, вернулся ли игрок в зону за это время
         if (p.lat != null && p.lng != null) {
             const dist = getDistance(p.lat, p.lng, gameCenter.lat, gameCenter.lng);
             if (dist > ZONE_RADIUS) {
@@ -333,7 +343,7 @@ io.on('connection', (socket) => {
             shieldEnd: 0, killModeEnd: 0, killCooldown: 0, inCheckpoint: false, currentCheckpointId: null,
             coins: 0, po: 0, multiplier: 1, inventory: {}, activeEffects: {},
             teamId: null, pendingInvite: null, teamCooldown: 0, canTrio: false,
-            zoneWarningActive: false, zoneWarningEnd: 0,
+            zoneWarningActive: false, zoneWarningEnd: 0, lastLocationAt: 0,
             ...playerData,
             reconnectToken: crypto.randomUUID(), connected: true
         };
@@ -411,6 +421,7 @@ io.on('connection', (socket) => {
         const p = players[socket.id];
         if (p) {
             p.lat = coords.lat; p.lng = coords.lng;
+            p.lastLocationAt = Date.now();
             socket.broadcast.emit('playerMoved', { id: socket.id, coords });
 
             if (gameState === 'playing' && !p.isDead) {
