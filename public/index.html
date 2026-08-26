@@ -4,11 +4,23 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Bubble Battle</title>
+    
+    <!-- НОВОЕ: Подключаем манифест -->
+    <link rel="manifest" href="manifest.json">
+    
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- НОВОЕ: Запускаем фоновый воркер -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js')
+              .then(() => console.log('Воркер зарегистрирован'))
+              .catch((err) => console.error('Ошибка воркера:', err));
+        }
+    </script>
+    
     <style>
+/* ... дальше идут твои обычные стили ... */
         :root {
             --bg-void: #070b14;
             --bg-deep: #0c1626;
@@ -477,6 +489,6 @@
     
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="app.js?v=15"></script>
+    <script src="app.js?v=13"></script>
 </body>
 </html>
