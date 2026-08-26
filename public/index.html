@@ -105,8 +105,8 @@
         button:active { transform: scale(0.96); }
         button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 
-        .colors { display: flex; justify-content: center; gap: 12px; margin: 14px 0; }
-        .color-btn { width: 38px; height: 38px; border-radius: 50%; border: 3px solid transparent; cursor: pointer; transition: all 0.2s; }
+        .colors { display: flex; justify-content: center; gap: 10px; margin: 14px 0; flex-wrap: wrap; }
+        .color-btn { width: 38px; height: 38px; border-radius: 50%; border: 3px solid transparent; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
         .color-btn.active { border-color: white; transform: scale(1.18); box-shadow: 0 0 14px rgba(255,255,255,0.85); }
 
         #lobby-screen { display: none; }
@@ -141,10 +141,11 @@
         .dead-overlay { position: absolute; font-size: 24px; z-index: 10; text-shadow: 0 0 5px black; }
 
         #ui-container {
-            display: none; position: absolute; top: 12px; right: 12px; z-index: 1000;
+            display: none; position: absolute; top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); z-index: 1000;
             background: rgba(12, 22, 38, 0.88); border: 1px solid var(--panel-border);
-            padding: 14px; border-radius: var(--radius-m); box-shadow: 0 8px 28px rgba(0,0,0,0.45);
-            backdrop-filter: blur(14px); width: 168px; text-align: center;
+            padding: 12px 10px; border-radius: var(--radius-m); box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+            backdrop-filter: blur(14px); width: min(168px, calc(100vw - 24px)); text-align: center;
+            max-width: calc(100vw - 24px);
         }
         .stats-text { margin: 5px 0; font-weight: 600; font-size: 13px; color: var(--text-muted); }
         .stats-text span { font-family: var(--font-display); }
@@ -154,13 +155,20 @@
         #btn-kill { background: linear-gradient(135deg, var(--red), #a3121f); }
 
         #btn-inventory {
-            position: absolute; bottom: 22px; right: 22px; z-index: 1000;
+            position: absolute; bottom: calc(22px + env(safe-area-inset-bottom)); right: calc(22px + env(safe-area-inset-right)); z-index: 1000;
             background: linear-gradient(135deg, var(--cyan), #0077a3); color: #04202b;
             width: 60px; height: 60px; border-radius: 50%; font-size: 24px; display: none;
             box-shadow: 0 6px 20px rgba(0,229,255,0.4); padding: 0;
         }
 
-        #buffs-panel { position: absolute; top: 12px; left: 12px; z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
+        #btn-center-player {
+            position: absolute; top: calc(12px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left)); z-index: 1001;
+            width: 46px; height: 46px; border-radius: 14px; display: none; padding: 0; font-size: 22px;
+            background: linear-gradient(135deg, rgba(0,229,255,0.85), rgba(0,90,140,0.9)); color: #021822;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+        }
+
+        #buffs-panel { position: absolute; top: calc(68px + env(safe-area-inset-top)); left: calc(12px + env(safe-area-inset-left)); z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
         .buff-icon {
             background: rgba(12, 22, 38, 0.9); color: var(--text-primary); border: 1px solid var(--panel-border);
             padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; display: none;
@@ -377,6 +385,8 @@
         </div>
     </div>
 
+    <button id="btn-center-player" onclick="centerOnPlayer()" aria-label="Вернуться к игроку">📍</button>
+
     <div id="buffs-panel">
         <div id="buff-scan" class="buff-icon">📡 Сканер: <span class="time"></span></div>
         <div id="buff-dash" class="buff-icon" style="color: #4caf50;">🛡️ Рывок: <span class="time"></span></div>
@@ -467,6 +477,6 @@
     
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="app.js?v=14"></script>
+    <script src="app.js?v=15"></script>
 </body>
 </html>
