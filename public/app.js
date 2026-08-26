@@ -546,9 +546,9 @@ function initMap() {
     const tileBounds = metersToLatLngBounds(gameCenter[0], gameCenter[1], ZONE_RADIUS_M + TILE_LOAD_PADDING_M);
 
     map = L.map('map', {
-        preferCanvas: true,       // canvas-рендер вместо SVG — заметно легче на телефонах
+        preferCanvas: true,
         zoomControl: true,
-        maxBounds: tileBounds,    // не даём укатить карту далеко за пределы зоны
+        maxBounds: tileBounds,
         maxBoundsViscosity: 1.0,
         minZoom: 14,
         maxZoom: 19
@@ -557,8 +557,8 @@ function initMap() {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
         minZoom: 14,
-        bounds: tileBounds,       // Leaflet не запросит тайлы за пределами этой области
-        keepBuffer: 2,            // меньше тайлов держим в памяти про запас
+        bounds: tileBounds,
+        keepBuffer: 2,
         updateWhenZooming: false
     }).addTo(map);
 
@@ -566,28 +566,60 @@ function initMap() {
 
     if (!checkGeoSupport()) return;
 
-    // watchPosition — единственный источник обновлений позиции. Раньше рядом с ним ещё был
-    // setInterval с getCurrentPosition каждые 2с — это удваивало сетевой трафик на каждого игрока
-    // (при 10 игроках сервер рассылал вдвое больше 'playerMoved', чем нужно) и не давало выигрыша,
-    // так как watchPosition и так сообщает о каждом изменении координат.
-    let lastFixTime = Date.now();
-    navigator.geolocation.watchPosition(
-        (pos) => { lastFixTime = Date.now(); hideGeoWarning(); updatePosition(pos); },
-        handleGeoError,
-        { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
-    );
+    let geoWatchId = null;
+    let geoLastFixTime = Date.now();
+    let geoFallbackTimer = null;
 
-    // Подстраховка: если по какой-то причине watchPosition "завис" (бывает на некоторых Android-браузерах
-    // при уходе в фон), раз в 10с делаем разовый опрос как запасной вариант.
-    setInterval(() => {
-        if (Date.now() - lastFixTime > 10000) {
-            navigator.geolocation.getCurrentPosition(
-                (pos) => { lastFixTime = Date.now(); hideGeoWarning(); updatePosition(pos); },
-                handleGeoError,
-                { enableHighAccuracy: true, maximumAge: 1000 }
-            );
+    function handleGeoPosition(pos) {
+        geoLastFixTime = Date.now();
+        hideGeoWarning();
+        updatePosition(pos);
+    }
+
+    function restartGeoWatch() {
+        if (geoWatchId !== null) navigator.geolocation.clearWatch(geoWatchId);
+        geoWatchId = navigator.geolocation.watchPosition(
+            handleGeoPosition,
+            handleGeoError,
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 }
+        );
+    }
+
+    function scheduleGeoFallback() {
+        if (geoFallbackTimer) clearInterval(geoFallbackTimer);
+
+        geoFallbackTimer = setInterval(() => {
+            const staleMs = Date.now() - geoLastFixTime;
+            const shouldRefresh = staleMs > 12000 || document.visibilityState === 'hidden';
+
+            if (shouldRefresh) {
+                navigator.geolocation.getCurrentPosition(
+                    handleGeoPosition,
+                    (err) => {
+                        if (err.code === 1) handleGeoError(err);
+                        else if (Date.now() - geoLastFixTime > 30000) {
+                            console.warn('Статус геолокации задержан — пробуем повторно после таймаута.');
+                        }
+                    },
+                    { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 }
+                );
+            }
+        }, 8000);
+    }
+
+    restartGeoWatch();
+    scheduleGeoFallback();
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            restartGeoWatch();
+            navigator.geolocation.getCurrentPosition(handleGeoPosition, handleGeoError, {
+                enableHighAccuracy: true,
+                maximumAge: 2000,
+                timeout: 15000
+            });
         }
-    }, 10000);
+    });
 }
 
 function updateVisibility() {
