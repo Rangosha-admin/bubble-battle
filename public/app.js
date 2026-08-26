@@ -61,7 +61,7 @@ const SHOP_ITEMS = {
     'trio': { name: 'Право на Трио', cost: 30, level: 'main', desc: 'Команда до 3 чел' }
 };
 
-const palette = ['#ff4081', '#2196f3', '#4caf50', '#ffeb3b', '#9c27b0'];
+const palette = ['#ff3b6b', '#1e88e5', '#2ecc71', '#f5c400', '#8e44ad', '#00bcd4', '#ff7f50', '#7cb342', '#ff5e5b', '#12b886'];
 
 // ==================== ДИАГНОСТИКА ГЕОЛОКАЦИИ ====================
 // Главная причина, по которой другие игроки "не появляются на карте" в реальных условиях —
@@ -228,6 +228,7 @@ socket.on('gameStarted', (data) => {
     document.getElementById('map').style.display = 'block';
     document.getElementById('ui-container').style.display = 'block';
     document.getElementById('btn-inventory').style.display = 'block';
+    document.getElementById('btn-center-player').style.display = 'block';
     document.getElementById('stop-notice').style.display = 'none';
 
     matchEndTime = data.matchEndTime;
@@ -261,6 +262,7 @@ socket.on('gameReset', (data) => {
     document.getElementById('map').style.display = 'none';
     document.getElementById('ui-container').style.display = 'none';
     document.getElementById('btn-inventory').style.display = 'none';
+    document.getElementById('btn-center-player').style.display = 'none';
     document.getElementById('login-screen').style.display = 'flex';
     document.getElementById('lobby-screen').style.display = 'none';
     document.getElementById('finale-call-overlay').classList.remove('show');
@@ -652,12 +654,21 @@ function createOtherPlayerMarker(player) {
     marker.addTo(map);
 }
 
+function centerOnPlayer() {
+    if (!map || !myMarker) return;
+    map.flyTo(myMarker.getLatLng(), Math.max(map.getZoom(), 17), { duration: 0.5 });
+}
+
 function updatePosition(position) {
     myData.lat = position.coords.latitude; myData.lng = position.coords.longitude;
     const myLatLng = L.latLng(myData.lat, myData.lng);
 
-    if (!myMarker) { myMarker = L.marker(myLatLng, { icon: createBubbleIcon(myData) }).addTo(map); map.setView(myLatLng, 17); }
-    else { myMarker.setLatLng(myLatLng); if (!map.getBounds().contains(myLatLng)) map.panTo(myLatLng); }
+    if (!myMarker) {
+        myMarker = L.marker(myLatLng, { icon: createBubbleIcon(myData) }).addTo(map);
+        map.setView(myLatLng, 17);
+    } else {
+        myMarker.setLatLng(myLatLng);
+    }
 
     // Троттлинг: шлём координаты на сервер не чаще раза в ~1.2с. Без этого при нескольких игроках
     // сервер рассылает каждому все чужие 'playerMoved' пропорционально частоте GPS-колбэков —
